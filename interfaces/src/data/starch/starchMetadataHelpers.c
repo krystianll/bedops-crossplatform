@@ -36,13 +36,17 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#if !defined(_WIN32) /* bedops-crossplatform: no <sys/utsname.h> on Windows */
 #include <sys/utsname.h>
+#endif
 #include <limits.h> /* CHAR_BIT */
 #include <time.h>
 #endif
 
 #include <unistd.h>
+#if !defined(_WIN32) /* bedops-crossplatform: no <sys/utsname.h> on Windows */
 #include <sys/utsname.h>
+#endif
 
 #include "data/starch/starchBase64Coding.h"
 #include "data/starch/starchSha1Digest.h"
@@ -2081,6 +2085,16 @@ STARCH_buildProcessIDTag(char **tag)
 #ifdef DEBUG
     fprintf(stderr, "\n--- STARCH_buildProcessIDTag() ---\n");
 #endif
+#if defined(_WIN32)
+    /* bedops-crossplatform: no uname() on Windows; the host name comes from
+       COMPUTERNAME (the tag only makes temporary file names unique) */
+    pid_t pid;
+    const char *host = getenv("COMPUTERNAME");
+    char _tag[STARCH_TAG_MAX_LENGTH];
+
+    pid = getpid();
+    snprintf(_tag, sizeof(_tag), "pid%d.%s", pid, host ? host : "localhost");
+#else
     pid_t pid;
     struct utsname uts;
     char _tag[STARCH_TAG_MAX_LENGTH];
@@ -2088,6 +2102,7 @@ STARCH_buildProcessIDTag(char **tag)
     pid = getpid();
     uname( &uts );
     sprintf(_tag, "pid%d.%s", pid, uts.nodename);
+#endif
     *tag = STARCH_strndup(_tag, strlen(_tag) + 1);
 }
 

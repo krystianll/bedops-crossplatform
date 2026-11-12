@@ -63,9 +63,26 @@ namespace {
 } // unnamed namespace
 #endif
 
+#if defined(_WIN32)
+/* bedops-crossplatform: for _fmode, _setmode and _O_BINARY */
+#include <fcntl.h>
+#include <io.h>
+#include <stdio.h>
+#include <stdlib.h>
+#endif
+
 int
 main (int argc, char **argv)
 {
+#if defined(_WIN32)
+    /* bedops-crossplatform: binary stdio and files, as on Unix: text mode
+       turned every \n written into \r\n and corrupted Starch archives
+       streamed through stdin/stdout. _fmode covers every fopen() after this. */
+    _fmode = _O_BINARY;
+    _setmode(_fileno(stdin), _O_BINARY);
+    _setmode(_fileno(stdout), _O_BINARY);
+    _setmode(_fileno(stderr), _O_BINARY);
+#endif
 #ifdef DEBUG
     fprintf (stderr, "\n--- starchcat main() - enter ---\n");
 #endif

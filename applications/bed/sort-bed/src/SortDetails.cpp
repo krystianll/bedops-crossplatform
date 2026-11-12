@@ -151,11 +151,18 @@ createDir(char* dir)
     struct stat mystat;
     bool ok = true;
     ifstream ifcheck(dir);
-    bool makeit = !ifcheck.good();
+#if defined(_WIN32)
+    /* bedops-crossplatform: Windows cannot open a directory as a file stream,
+       so an existing --tmpdir looked missing and mkdir() then failed */
+    const bool dirExists = (stat(dir, &mystat) == 0);
+#else
+    const bool dirExists = ifcheck.good();
+#endif
+    bool makeit = !dirExists;
     FILE *fptr = NULL;
     char *fname = NULL;
 
-    if (ifcheck.good()) /* already exists */
+    if (dirExists) /* already exists */
         {
             if (stat(dir, &mystat) == 0)
                 {
@@ -171,6 +178,10 @@ createDir(char* dir)
                                 }
                             else
                                 {
+#if defined(_WIN32)
+                                    /* bedops-crossplatform: Windows cannot remove a file that is still open */
+                                    fclose(fptr);
+#endif
                                     remove(fname);
                                 }
                         }
@@ -191,7 +202,12 @@ createDir(char* dir)
         return EXIT_FAILURE;
     else if (makeit)
         {
+#if defined(_WIN32)
+            /* bedops-crossplatform: Windows mkdir() takes no mode argument */
+            if (mkdir(dir) != 0)
+#else
             if (mkdir(dir, 0700) != 0)
+#endif
                {
                   fprintf(stderr, "Unknown problem creating directory.  Check permissions.  %s\n", dir);
                   return EXIT_FAILURE;

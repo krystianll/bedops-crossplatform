@@ -37,6 +37,11 @@
 namespace BedOperations {
 
 // enumerations
+#if defined(_WIN32) && defined(DIFFERENCE)
+/* bedops-crossplatform: bzlib.h (via starchApi.hpp) includes <windows.h>, whose
+   winuser.h defines DIFFERENCE as 11 and would replace the enumerator below */
+#undef DIFFERENCE
+#endif
 enum ModeType
   { MERGE, INTERSECTION, COMPLEMENT, DIFFERENCE, SYMMETRIC_DIFFERENCE,
     UNIONALL, ELEMENTOF, NOTELEMENTOF, PARTITION, CHOP };

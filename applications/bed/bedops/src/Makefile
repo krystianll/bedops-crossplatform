@@ -27,6 +27,11 @@ LIBLOCATION         = -L${LOCALJANSSONLIBDIR} -L${LOCALBZIP2LIBDIR} -L${LOCALZLI
 LIBRARIES           = ${LOCALJANSSONLIB} ${LOCALBZIP2LIB} ${LOCALZLIBLIB}
 BLDFLAGS            = -Wall -pedantic -O3 -std=c++11
 SFLAGS              = -static
+# bedops-crossplatform: Windows gives the main thread a 1 MB stack (Linux and
+# macOS: 8 MB); starch keeps several 1 MB buffers on it and overflowed.
+ifeq ($(OS),Windows_NT)
+SFLAGS += -Wl,--stack,8388608
+endif
 
 dependency_names    = NaN starchConstants starchFileHelpers starchHelpers starchMetadataHelpers unstarchHelpers starchSha1Digest starchBase64Coding
 dependencies        = $(addprefix $(OBJDIR)/, $(addsuffix .o, $(dependency_names)))
