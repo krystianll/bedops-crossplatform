@@ -22,9 +22,29 @@
 
 #include "convert2bed.h"
 
+#if defined(_WIN32)
+/* bedops-crossplatform: see main() */
+static void
+c2b_ignore_invalid_parameter(const wchar_t* expression, const wchar_t* function, const wchar_t* file, unsigned int line, uintptr_t reserved)
+{
+    (void) expression, (void) function, (void) file, (void) line, (void) reserved;
+}
+#endif
+
 int
 main(int argc, char** argv)
 {
+#if defined(_WIN32)
+    /* bedops-crossplatform: binary stdio and files, as on Unix (text mode
+       turned \n into \r\n). Upstream closes some pipe descriptors twice,
+       which Unix answers with EBADF; the Windows C runtime would end the
+       process instead, unless the invalid-parameter handler returns. */
+    _fmode = _O_BINARY;
+    _setmode(_fileno(stdin), _O_BINARY);
+    _setmode(_fileno(stdout), _O_BINARY);
+    _setmode(_fileno(stderr), _O_BINARY);
+    _set_invalid_parameter_handler(c2b_ignore_invalid_parameter);
+#endif
 #ifdef DEBUG
     fprintf (stderr, "--- convert2bed main() - enter ---\n");
 #endif
@@ -7105,19 +7125,33 @@ c2b_delete_pipeset(c2b_pipeset_t* p)
 static void
 c2b_set_close_exec_flag(int fd)
 {
+#if defined(_WIN32)
+    (void) fd; /* bedops-crossplatform: pipes are created non-inheritable (c2b_pipe4) */
+#else
     fcntl(fd, F_SETFD, fcntl(fd, F_GETFD) | FD_CLOEXEC);
+#endif
 }
 
 static void
 c2b_unset_close_exec_flag(int fd)
 {
+#if defined(_WIN32)
+    (void) fd; /* bedops-crossplatform: c2b_popen4 passes exactly the child's three handles */
+#else
     fcntl(fd, F_SETFD, fcntl(fd, F_GETFD) & ~FD_CLOEXEC);
+#endif
 }
 
 static int
 c2b_pipe4(int fd[2], int flags)
 {
+#if defined(_WIN32)
+    /* bedops-crossplatform: binary, and never inherited by the helper
+       programs (a child holding a write end would never see end of input) */
+    int ret = _pipe(fd, 65536, _O_BINARY | _O_NOINHERIT);
+#else
     int ret = pipe(fd);
+#endif
     if (flags & PIPE4_FLAG_RD_CLOEXEC) {
         c2b_set_close_exec_flag(fd[PIPE_READ]);
     }
@@ -7127,6 +7161,190 @@ c2b_pipe4(int fd[2], int flags)
     return ret;
 }
 
+#if defined(_WIN32)
+/*
+   bedops-crossplatform: Windows process layer. c2b_popen4() starts the
+   command with CreateProcess(), handing the child exactly its stdin, stdout
+   and stderr (PROC_THREAD_ATTRIBUTE_HANDLE_LIST), and closes the parent's
+   copies of the child's pipe ends as the fork() version does. The `cat`
+   stage (C2B_INPROCESS_CAT) becomes a thread that copies the pipe. A
+   child's pid indexes c2b_win_children for c2b_waitpid().
+*/
+#define C2B_WIN_MAX_CHILDREN 8
+
+typedef struct {
+    pid_t pid;
+    HANDLE process;
+    pthread_t thread;
+    int is_thread;
+    int reaped;
+    int status;
+    int in;
+    int out;
+} c2b_win_child_t;
+
+static c2b_win_child_t c2b_win_children[C2B_WIN_MAX_CHILDREN];
+static int c2b_win_child_count = 0;
+
+static void *
+c2b_win_cat(void* arg)
+{
+    c2b_win_child_t* child = (c2b_win_child_t *) arg;
+    char* buffer = malloc(C2B_THREAD_IO_BUFFER_SIZE);
+    int bytes_read;
+
+    if (!buffer) {
+        fprintf(stderr, "Error: Could not allocate space to c2b_win_cat() buffer\n");
+        exit(ENOMEM);
+    }
+    while ((bytes_read = read(child->in, buffer, C2B_THREAD_IO_BUFFER_SIZE)) > 0) {
+        if (write(child->out, buffer, bytes_read) != bytes_read) {
+            break;
+        }
+    }
+    close(child->in);
+    close(child->out);
+    free(buffer);
+    return NULL;
+}
+
+static HANDLE
+c2b_win_inheritable_handle(int fd)
+{
+    HANDLE h = (HANDLE) _get_osfhandle(fd);
+    HANDLE dup = NULL;
+    if ((h == INVALID_HANDLE_VALUE) || (h == NULL)) {
+        return NULL;
+    }
+    if (!DuplicateHandle(GetCurrentProcess(), h, GetCurrentProcess(), &dup, 0, TRUE, DUPLICATE_SAME_ACCESS)) {
+        return NULL;
+    }
+    return dup;
+}
+
+static pid_t
+c2b_popen4(const char* cmd, int pin[2], int pout[2], int perr[2], int flags)
+{
+    c2b_win_child_t* child = NULL;
+    HANDLE std_handles[3];
+    HANDLE inherited[3];
+    DWORD inherited_count = 0;
+    SIZE_T attribute_size = 0;
+    LPPROC_THREAD_ATTRIBUTE_LIST attributes = NULL;
+    STARTUPINFOEXA startup;
+    PROCESS_INFORMATION process;
+    char* command_line = NULL;
+    BOOL started = FALSE;
+    DWORD i;
+
+    (void) flags; /* convert2bed always passes POPEN4_FLAG_NONE */
+    if (c2b_win_child_count == C2B_WIN_MAX_CHILDREN) {
+        fprintf(stderr, "Error: Too many pipeline stages\n");
+        return -1;
+    }
+    child = &c2b_win_children[c2b_win_child_count];
+    memset(child, 0, sizeof(*child));
+    child->pid = c2b_win_child_count + 1;
+
+    if (strncmp(cmd, C2B_INPROCESS_CAT, strlen(C2B_INPROCESS_CAT)) == 0) {
+        child->is_thread = 1;
+        child->in = pin[PIPE_READ];
+        child->out = pout[PIPE_WRITE];
+        if (pthread_create(&child->thread, NULL, c2b_win_cat, child) != 0) {
+            fprintf(stderr, "Error: Could not start the stdin copying thread\n");
+            return -1;
+        }
+        c2b_win_child_count++;
+        return child->pid; /* the thread closes its pipe ends itself */
+    }
+
+    std_handles[0] = c2b_win_inheritable_handle(pin[PIPE_READ]);
+    std_handles[1] = c2b_win_inheritable_handle(pout[PIPE_WRITE]);
+    std_handles[2] = c2b_win_inheritable_handle(perr[PIPE_WRITE]);
+    for (i = 0; i < 3; i++) {
+        if (std_handles[i]) {
+            inherited[inherited_count++] = std_handles[i];
+        }
+    }
+
+    InitializeProcThreadAttributeList(NULL, 1, 0, &attribute_size);
+    attributes = (LPPROC_THREAD_ATTRIBUTE_LIST) malloc(attribute_size);
+    command_line = malloc(strlen(cmd) + 1);
+    if (!attributes || !command_line) {
+        fprintf(stderr, "Error: Could not allocate space to start [%s]\n", cmd);
+        exit(ENOMEM);
+    }
+    memcpy(command_line, cmd, strlen(cmd) + 1);
+    memset(&startup, 0, sizeof(startup));
+    startup.StartupInfo.cb = sizeof(startup);
+    startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+    startup.StartupInfo.hStdInput = std_handles[0];
+    startup.StartupInfo.hStdOutput = std_handles[1];
+    startup.StartupInfo.hStdError = std_handles[2];
+    if (InitializeProcThreadAttributeList(attributes, 1, 0, &attribute_size)
+        && UpdateProcThreadAttribute(attributes, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
+                                     inherited, inherited_count * sizeof(HANDLE), NULL, NULL)) {
+        startup.lpAttributeList = attributes;
+        started = CreateProcessA(NULL, command_line, NULL, NULL, TRUE, EXTENDED_STARTUPINFO_PRESENT,
+                                 NULL, NULL, &startup.StartupInfo, &process);
+    }
+    if (!started) {
+        fprintf(stderr, "Error: Could not start [%s] (Windows error %lu)\n", cmd, (unsigned long) GetLastError());
+    }
+    DeleteProcThreadAttributeList(attributes);
+    free(attributes);
+    free(command_line);
+    for (i = 0; i < inherited_count; i++) {
+        CloseHandle(inherited[i]);
+    }
+    if (!started) {
+        return -1;
+    }
+    CloseHandle(process.hThread);
+    child->process = process.hProcess;
+    c2b_win_child_count++;
+
+    /* Parent side, as after fork() */
+    close(pin[PIPE_READ]);
+    close(pout[PIPE_WRITE]);
+    return child->pid;
+}
+
+static pid_t
+c2b_waitpid(pid_t pid, int* status, int options)
+{
+    int n;
+    for (n = 0; n < c2b_win_child_count; n++) {
+        c2b_win_child_t* child = &c2b_win_children[n];
+        if (child->pid != pid) {
+            continue;
+        }
+        if (!child->reaped) {
+            if (child->is_thread) {
+                if (options & WNOHANG) {
+                    return 0;
+                }
+                pthread_join(child->thread, NULL);
+                child->status = 0;
+            }
+            else {
+                DWORD code = 0;
+                if (WaitForSingleObject(child->process, (options & WNOHANG) ? 0 : INFINITE) == WAIT_TIMEOUT) {
+                    return 0;
+                }
+                GetExitCodeProcess(child->process, &code);
+                CloseHandle(child->process);
+                child->status = code > 255 ? (int) code : (int) (code << 8);
+            }
+            child->reaped = 1;
+        }
+        *status = child->status;
+        return pid;
+    }
+    errno = ECHILD;
+    return -1;
+}
+#else
 static pid_t
 c2b_popen4(const char* cmd, int pin[2], int pout[2], int perr[2], int flags)
 {
@@ -7188,6 +7406,7 @@ c2b_popen4(const char* cmd, int pin[2], int pout[2], int perr[2], int flags)
     /* Unreachable */
     return ret;
 }
+#endif /* bedops-crossplatform: _WIN32 process layer */
 
 static void
 c2b_test_dependencies()
@@ -7309,6 +7528,15 @@ c2b_test_dependencies()
     }
 
     if (c2b_globals.input_format_idx != BAM_FORMAT) {
+#if defined(_WIN32)
+        /* bedops-crossplatform: no `cat` on Windows; c2b_popen4 copies stdin in a thread */
+        c2b_globals.cat->path = malloc(strlen(C2B_INPROCESS_CAT) + 1);
+        if (!c2b_globals.cat->path) {
+            fprintf(stderr, "Error: Could not allocate space for storing cat path global\n");
+            exit(ENOMEM); /* Not enough space (POSIX.1) */
+        }
+        memcpy(c2b_globals.cat->path, C2B_INPROCESS_CAT, strlen(C2B_INPROCESS_CAT) + 1);
+#else
         char* cat = NULL;
         cat = malloc(strlen(c2b_cat) + 1);
         if (!cat) {
@@ -7338,6 +7566,7 @@ c2b_test_dependencies()
         }
         free(path_cat), path_cat = NULL;
         free(cat), cat = NULL;
+#endif
     }
 
     free(path), path = NULL;
@@ -7354,13 +7583,32 @@ c2b_print_matches(char* path, char* fn)
     fprintf(stderr, "--- c2b_print_matches() - enter ---\n");
 #endif
 
+#if defined(_WIN32)
+    /* bedops-crossplatform: PATH is separated by ';' and programs end in .exe.
+       The stored path is quoted, since it starts a command line
+       (C:\Program Files\...); paths may exceed MAX_PATH. */
+    char tested[4096];
+    char candidate[4096 + 2];
+#else
     char candidate[PATH_MAX];
+#endif
     const char* d;
     boolean found = kFalse;
 
     if (strchr(fn, '/') != NULL) {
         return (c2b_is_there(fn) ? kTrue : kFalse);
     }
+#if defined(_WIN32)
+    while ((d = c2b_strsep(&path, ";")) != NULL) {
+        if (*d == '\0') {
+            d = ".";
+        }
+        if (snprintf(tested, sizeof(tested), "%s\\%s.exe", d, fn) >= (int) sizeof(tested)) {
+            continue;
+        }
+        snprintf(candidate, sizeof(candidate), "\"%s\"", tested);
+        if (c2b_is_there(tested)) {
+#else
     while ((d = c2b_strsep(&path, ":")) != NULL) {
         if (*d == '\0') {
             d = ".";
@@ -7369,6 +7617,7 @@ c2b_print_matches(char* path, char* fn)
             continue;
         }
         if (c2b_is_there(candidate)) {
+#endif
             found = kTrue;
             if (strcmp(fn, c2b_samtools) == 0) {
                 c2b_globals.sam->samtools_path = malloc(strlen(candidate) + 1);
@@ -7459,10 +7708,15 @@ c2b_is_there(char* candidate)
     struct stat fin;
     boolean found = kFalse;
 
+#if defined(_WIN32)
+    /* bedops-crossplatform: no execute bits or getuid() on Windows; a regular .exe file will do */
+    if (stat(candidate, &fin) == 0 && S_ISREG(fin.st_mode)) {
+#else
     if (access(candidate, X_OK) == 0 
         && stat(candidate, &fin) == 0 
         && S_ISREG(fin.st_mode) 
         && (getuid() != 0 || (fin.st_mode & (S_IXUSR | S_IXGRP | S_IXOTH)) != 0)) {
+#endif
 #ifdef DEBUG
         fprintf(stderr, "Debug: Found dependency [%s]\n", candidate);
 #endif

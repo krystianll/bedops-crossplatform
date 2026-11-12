@@ -14,6 +14,11 @@ WRAPPERDIR                = wrappers
 PROG                      = convert2bed
 SOURCE                    = convert2bed.c
 SFLAGS                    = -static
+# bedops-crossplatform: Windows gives the main thread a 1 MB stack (Linux and
+# macOS: 8 MB); convert2bed's threads take the same default.
+ifeq ($(OS),Windows_NT)
+SFLAGS += -Wl,--stack,8388608
+endif
 
 all: build
 
@@ -48,6 +53,17 @@ $(DISTDIR)/gprof.%-${BINARY_TYPE}: %.c gprof-helper.so
 
 %.so: %.c
 	$(CC) -shared -fPIC $^ -o $@ $(LIBS) -ldl
+
+# bedops-crossplatform: on Windows, build a native launcher for each bash
+# wrapper (wrappers/gff2bed, ...): $(DISTDIR)/gff2bed-$(BINARY_TYPE).exe
+ifeq ($(OS),Windows_NT)
+WIN_WRAPPERS = $(notdir $(wildcard $(WRAPPERDIR)/*2bed $(WRAPPERDIR)/*2starch))
+build: $(foreach w,$(WIN_WRAPPERS),$(DISTDIR)/$(w)-$(BINARY_TYPE).exe)
+
+$(DISTDIR)/%-$(BINARY_TYPE).exe: c2b_wrapper_win.c
+	mkdir -p $(DISTDIR) && $(CC) -Wall -Wextra -O2 -static $(CFLAGS) \
+		-DC2B_WRAPPER_INPUT=\"$(word 1,$(subst 2, ,$*))\" -DC2B_WRAPPER_OUTPUT=\"$(word 2,$(subst 2, ,$*))\" $< -o $@
+endif
 
 clean:
 	rm -rf $(DISTDIR)

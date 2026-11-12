@@ -12,18 +12,22 @@ to build this tree and what was changed**; everything else is unchanged from
 upstream.
 
 Upstream BEDOPS builds only on Unix-like systems. This tree adds a native
-Windows build (MSYS2, no Cygwin runtime) of the nine core programs —
-`bedops`, `bedmap`, `bedextract`, `closest-features`, `sort-bed`, `starch`,
-`unstarch`, `starchcat` and `starchstrip` — and fixes what broke them there:
-text-mode I/O, the 1 MB Windows main-thread stack (`starch` crashed), a
-`sort-bed --tmpdir` check that cannot see an existing directory, and three
-compile errors.
+Windows build (MSYS2, no Cygwin runtime) of
 
-**Not ported yet:** `convert2bed` and the conversion wrapper scripts
-(`bam2bed`, `gff2bed`, `vcf2bed`, …), which run their pipelines through
-`fork()`/`exec()`, and the cluster scripts (`starchcluster_*`,
-`update-sort-bed-*`). On Windows the build reports `convert2bed` as failed;
-everything else builds.
+- the nine core programs — `bedops`, `bedmap`, `bedextract`,
+  `closest-features`, `sort-bed`, `starch`, `unstarch`, `starchcat` and
+  `starchstrip` — fixing what broke them there: text-mode I/O, the 1 MB
+  Windows main-thread stack (`starch` crashed), a `sort-bed --tmpdir` check
+  that cannot see an existing directory, and three compile errors;
+- `convert2bed`, whose pipeline stages (`samtools`, `sort-bed`, `starch`)
+  are started with `CreateProcess()` instead of `fork()`/`exec()`;
+- the 18 conversion wrappers (`bam2bed`, `gff2starch`, `vcf2bed`, …), bash
+  scripts upstream, as small native programs that run `convert2bed` the
+  way the scripts do.
+
+**Not ported:** the cluster scripts (`bam2bed_sge`, `*_slurm`,
+`*_gnuParallel`, `starchcluster_*`, `update-sort-bed-*`), which drive a job
+scheduler or GNU Parallel through bash.
 
 ---
 
@@ -51,40 +55,48 @@ Install the toolchain (`<env>` = `ucrt-x86_64` or `clang-aarch64`):
 pacman -S --needed make mingw-w64-<env>-gcc   # UCRT64; on CLANGARM64: mingw-w64-<env>-clang
 ```
 
-Then build the typical binary type (`-k` keeps going past `convert2bed`):
+Then build the typical binary type:
 
 ```bash
 # UCRT64
-make -k typical
+make typical
 # CLANGARM64
-make -k typical CC=clang CXX=clang++
+make typical CC=clang CXX=clang++
 ```
 
-The programs are `applications/bed/*/bin/<program>-typical.exe`. Copy the nine
-of them under their plain names (`bedops.exe`, …) to wherever you install
-them. Windows has no symbolic links for upstream's `switch-BEDOPS-binary-type`,
-so pick one binary type; `megarow` and `float128` build the same way
-(`make -k megarow`, `make -k float128`).
+The programs are `applications/bed/*/bin/<program>-typical.exe` (28: the nine
+core programs, `convert2bed` and the 18 wrappers). Copy them under their plain
+names (`bedops.exe`, `gff2bed.exe`, …) to one directory: a wrapper runs the
+`convert2bed.exe` next to it, else the one on `PATH`, and `convert2bed`
+finds `sort-bed`, `starch` and `samtools` (for BAM input) on `PATH`. Windows
+has no symbolic links for upstream's `switch-BEDOPS-binary-type`, so pick one
+binary type; `megarow` and `float128` build the same way (`make megarow`,
+`make float128`).
 
 ### Verify (any platform)
 
 Upstream's top-level `tests` target is broken (it looks for `tests/tests`), so
-run the test groups directly. On Windows, first copy the nine programs to
-`bin/` under their plain names; the starch group needs a `python` on `PATH`
-(the MSYS2 environment's own, e.g. `PATH=/usr/bin:/clangarm64/bin:$PATH`):
+run the test groups directly. On Windows, first copy the programs to `bin/`
+under their plain names, and put `bin/` first on `PATH`; the starch group needs
+a `python` on `PATH` (the MSYS2 environment's own, e.g.
+`PATH=$PWD/bin:/usr/bin:/clangarm64/bin:$PATH`):
 
 ```bash
 cd tests
 make -k -C bedops all BUILDTYPE=typical
 make -k -C starch all BUILDTYPE=typical
 make -k -C starch starchcat BUILDTYPE=typical
+make -k -C conversion all BUILDTYPE=typical
 ```
 
 On Windows ARM64 and x64 the same 67 `bedops` checks run as on macOS, with the
 same results except `named-pipe`: it passes a bash process substitution
 (`<(...)`, a `/proc/<pid>/fd/<n>` path only MSYS2 programs can open) to a
 native program. `--ec` Test 001 passes although it is meant to fail, as on
-macOS and Linux (an upstream bug). The six `starch` checks pass.
+macOS and Linux (an upstream bug). The six `starch` checks pass. The
+`conversion` group (`wig2bed`) gives the same results as on macOS: 12 checks
+pass and two `--keep-header` checks stop with error 22, as upstream does on
+macOS.
 `xplat_tests/` compares the Windows and macOS builds byte for byte (see below).
 
 ---
@@ -107,7 +119,10 @@ changes by `ifeq ($(OS),Windows_NT)`; Linux and macOS builds are unchanged.
 | `applications/bed/sort-bed/src/SortDetails.cpp` | `createDir()`: test that `--tmpdir` exists with `stat()`; close the probe file before removing it; `mkdir()` with one argument | `ifstream` cannot open a directory on Windows, so an existing `--tmpdir` (or `TMPDIR`) looked missing and `sort-bed` stopped with "Unknown problem creating directory"; Windows cannot remove an open file; Windows' `mkdir()` takes no mode. |
 | `interfaces/src/data/starch/starchMetadataHelpers.c` | No `<sys/utsname.h>`; the host name in the per-run tag comes from `COMPUTERNAME` | Windows has no `uname()`. The tag (`pid<N>.<host>`) only makes the names of the temporary per-chromosome files unique. |
 | `applications/bed/bedops/src/Input.hpp` | `#undef DIFFERENCE` before the `ModeType` enum | `bzlib.h` (through `starchApi.hpp`) includes `<windows.h>`, whose `winuser.h` defines `DIFFERENCE` as 11 and replaced the enumerator. |
-| `xplat_tests/` *(new)* | Parity harness: dumps 139 cases (all nine programs; stdin, Starch input from this and an upstream build, CRLF input, spaces and non-ASCII paths, `sort-bed --tmpdir`) and compares a Windows dump with a macOS one byte for byte, Starch archives through `unstarch` | Checks that the Windows build behaves exactly like macOS, beyond the pass/fail of the upstream tests. See `xplat_tests/README.md`. |
+| `applications/bed/conversion/src/convert2bed.{c,h}` | Windows process layer: `c2b_popen4()` starts a stage with `CreateProcess()`, passing the child only its three pipe ends (`PROC_THREAD_ATTRIBUTE_HANDLE_LIST`); `c2b_waitpid()` replaces `waitpid()` and shapes the status as on Unix; the `cat` stage runs as a thread; pipes are binary, non-inheritable `_pipe()`s; dependencies are searched on `PATH` split at `;` with `.exe`; binary stdio; a no-op invalid-parameter handler | Windows has no `fork()`, `exec()`, `/bin/sh` or `<sys/wait.h>`. Only the pipe ends of one stage may be inherited, or a stage never sees end-of-file on its input. The no-op handler stops the C runtime from ending the process when upstream closes a pipe end twice (harmless on Unix). |
+| `applications/bed/conversion/src/c2b_wrapper_win.c` *(new)* | A native launcher, built once per wrapper (`gff2bed.exe`, …), that parses the wrapper's options as the bash script does and runs `convert2bed --input=<fmt> --output=<bed\|starch> [options] -` | Windows cannot run the bash wrapper scripts. A note given with `--starch-note` is passed whole; the upstream scripts keep only its first word. |
+| `applications/bed/conversion/src/Makefile` | Link with an 8 MB stack; on Windows also build the wrapper launchers | As for the other programs; one launcher per script in `wrappers/` (`*2bed`, `*2starch`). |
+| `xplat_tests/` *(new)* | Parity harness: dumps 190 cases (all nine programs, `convert2bed` and every wrapper format; stdin, Starch input from this and an upstream build, CRLF input, spaces and non-ASCII paths, `sort-bed --tmpdir`) and compares a Windows dump with a macOS one byte for byte, Starch archives through `unstarch` | Checks that the Windows build behaves exactly like macOS, beyond the pass/fail of the upstream tests. See `xplat_tests/README.md`. |
 | `README.md` | This file | The upstream README's citation and copyright are kept below. |
 
 ### Upstream behaviour kept as it is
@@ -123,6 +138,10 @@ changes by `ifeq ($(OS),Windows_NT)`; Linux and macOS builds are unchanged.
   installer embeds one.
 - **`starchcat` with a missing input archive** stops through `assert()`, as
   upstream does; on Windows the process ends with status `0xC0000409`.
+- **Which `convert2bed` stage reports a failed `samtools`** is a race
+  upstream: one stage waits with `waitpid(0, …)`, i.e. for any child. On
+  Windows that wait finds no child, so the stage that started `samtools`
+  always reports it.
 
 ---
 

@@ -1,12 +1,13 @@
-"""Cross-platform parity of the BEDOPS core programs: run the same command
+"""Cross-platform parity of the BEDOPS programs (the core nine, convert2bed and
+its wrappers): run the same command
 lines with two builds (e.g. native Windows and macOS) and compare the results
 byte for byte.
 
 usage: python3 parity.py dump BIN_DIR DATA_DIR WORK_DIR OUT.json [case-substring]
        python3 parity.py cmp A.json B.json      (e.g. Windows vs macOS)
 
-BIN_DIR holds the programs (bedops, bedmap, ..., unstarch; `.exe` is added on
-Windows when needed). DATA_DIR is the tree's tests/ directory. `dump` runs every
+BIN_DIR holds the programs (bedops, bedmap, ..., unstarch, convert2bed, gff2bed,
+...; `.exe` is added on Windows when needed) and is put first on PATH. DATA_DIR is the tree's tests/ directory. `dump` runs every
 case in its own empty directory under WORK_DIR, after writing the shared inputs
 (INPUTS) there, and records exit code, stdout, stderr and every file the case
 wrote. The working directory and DATA_DIR are replaced by <CWD> and <DATA> (as
@@ -28,6 +29,8 @@ SD = D + "/starch/data/"
 SIG1 = SD + "001.unstarch.signature.001.test"   # Starch archives written by an upstream build
 CAT1 = SD + "001.starchcat.disjoint_chrs.chr1.001.test"
 CAT2 = SD + "001.starchcat.disjoint_chrs.chr2.001.test"
+CT = "../applications/bed/conversion/src/tests/"  # convert2bed samples, relative to DATA_DIR (stdin paths)
+XD = "../xplat_tests/data/"  # BAMs made from CT sam/*.sam (upstream's bam/sample.bam and split.bam are truncated)
 
 # Inputs written into every case's working directory (bytes, LF, sorted unless named otherwise).
 A = (b"chr1\t10\t50\ta\t1\n"
@@ -230,6 +233,60 @@ CASES = [
     ("starchstrip-exclude", "starchstrip", ["--exclude", "chr1", "a.starch"], {"pre": [starch_of("a.bed")]}),
     ("starchstrip-upstream", "starchstrip", ["--include", "chr1,chr10", SIG1], {}),
     ("starchstrip-none-left", "starchstrip", ["--exclude", "chr1,chr2,chrX", "a.starch"], {"pre": [starch_of("a.bed")]}),
+    # convert2bed through the wrappers (input on stdin; sort-bed, starch and, for BAM, samtools from PATH)
+    ("gff2bed", "gff2bed", [], {"stdin": CT + "gff/sample.gff"}),
+    ("gff2bed-unsorted-keep-header", "gff2bed", ["-dk"], {"stdin": CT + "gff/sample.gff"}),
+    ("gff2starch", "gff2starch", [], {"stdin": CT + "gff/sample.gff"}),
+    ("gff2starch-gzip-note", "gff2starch", ["--starch-gzip", "--starch-note=two words"], {"stdin": CT + "gff/sample.gff"}),
+    ("gtf2bed", "gtf2bed", [], {"stdin": CT + "gtf/sample.gtf"}),
+    ("gtf2bed-attribute-key", "gtf2bed", ["--attribute-key=transcript_id"], {"stdin": CT + "gtf/sample.gtf"}),
+    ("gtf2bed-attribute-key-short", "gtf2bed", ["-a", "gene_name"], {"stdin": CT + "gtf/sample.gtf"}),
+    ("gtf2starch", "gtf2starch", [], {"stdin": CT + "gtf/sample.gtf"}),
+    ("gvf2bed", "gvf2bed", [], {"stdin": CT + "gvf/sample.gvf"}),
+    ("gvf2starch", "gvf2starch", ["-g"], {"stdin": CT + "gvf/sample.gvf"}),
+    ("psl2bed-headered", "psl2bed", ["--keep-header"], {"stdin": CT + "psl/sample.headered.psl"}),
+    ("psl2bed-headerless", "psl2bed", [], {"stdin": CT + "psl/sample.headerless.psl"}),
+    ("psl2bed-split", "psl2bed", ["--split"], {"stdin": CT + "psl/sample.headerless.psl"}),
+    ("psl2starch", "psl2starch", [], {"stdin": CT + "psl/sample.headerless.psl"}),
+    ("rmsk2bed", "rmsk2bed", [], {"stdin": CT + "rmsk/sample.out"}),
+    ("rmsk2bed-2", "rmsk2bed", ["--do-not-sort"], {"stdin": CT + "rmsk/sample2.out"}),
+    ("rmsk2starch", "rmsk2starch", [], {"stdin": CT + "rmsk/sample.out"}),
+    ("vcf2bed", "vcf2bed", [], {"stdin": CT + "vcf/sample.vcf"}),
+    ("vcf2bed-keep-header", "vcf2bed", ["-k"], {"stdin": CT + "vcf/sample.vcf"}),
+    ("vcf2bed-do-not-split", "vcf2bed", ["--do-not-split"], {"stdin": CT + "vcf/sample.vcf"}),
+    ("vcf2bed-snvs", "vcf2bed", ["--snvs"], {"stdin": CT + "vcf/sample.vcf"}),
+    ("vcf2bed-insertions", "vcf2bed", ["--insertions"], {"stdin": CT + "vcf/sample.vcf"}),
+    ("vcf2bed-deletions", "vcf2bed", ["--deletions"], {"stdin": CT + "vcf/sample.vcf"}),
+    ("vcf2starch", "vcf2starch", [], {"stdin": CT + "vcf/sample.vcf"}),
+    ("wig2bed-1", "wig2bed", [], {"stdin": CT + "wig/sample_1.wig"}),
+    ("wig2bed-2", "wig2bed", [], {"stdin": CT + "wig/sample_2.wig"}),
+    ("wig2bed-3", "wig2bed", [], {"stdin": CT + "wig/sample_3.wig"}),
+    ("wig2bed-4-zero-indexed", "wig2bed", ["-x"], {"stdin": CT + "wig/sample_4.wig"}),
+    ("wig2bed-5-keep-header", "wig2bed", ["--keep-header"], {"stdin": CT + "wig/sample_5.wig"}),
+    ("wig2bed-6-multisplit", "wig2bed", ["--multisplit=part"], {"stdin": CT + "wig/sample_6.wig"}),
+    ("wig2starch", "wig2starch", [], {"stdin": CT + "wig/sample_1.wig"}),
+    ("sam2bed", "sam2bed", [], {"stdin": CT + "sam/sample.sam"}),
+    ("sam2bed-split", "sam2bed", ["--split"], {"stdin": CT + "sam/split.sam"}),
+    ("sam2bed-all-reads-reduced", "sam2bed", ["-aR"], {"stdin": CT + "sam/sample.sam"}),
+    ("sam2bed-split-with-deletions", "sam2bed", ["--split-with-deletions"], {"stdin": CT + "bam/split2.sam"}),
+    ("sam2starch", "sam2starch", [], {"stdin": CT + "sam/sample.sam"}),
+    ("bam2bed", "bam2bed", [], {"stdin": XD + "sample.bam"}),
+    ("bam2bed-all-reads", "bam2bed", ["-a"], {"stdin": XD + "sample.bam"}),
+    ("bam2bed-split", "bam2bed", ["--split"], {"stdin": XD + "split.bam"}),
+    ("bam2bed-unsorted", "bam2bed", ["--do-not-sort"], {"stdin": CT + "bam/split2.bam"}),
+    ("bam2starch", "bam2starch", [], {"stdin": XD + "sample.bam"}),
+    ("bam2bed-truncated", "bam2bed", [], {"stdin": CT + "bam/sample.bam"}),
+    ("bam2starch-truncated", "bam2starch", [], {"stdin": CT + "bam/sample.bam"}),
+    ("gff2bed-max-mem-tmpdir", "gff2bed", ["--max-mem=1G", "--sort-tmpdir=" + C + "/t"],
+     {"stdin": CT + "gff/sample.gff", "setup": {"t/.keep": b""}}),
+    ("gff2bed-empty-input", "gff2bed", [], {"stdin": b""}),
+    ("gff2bed-help", "gff2bed", ["--help"], {"stdin": b""}),
+    ("gff2bed-unknown-option", "gff2bed", ["--nosuch"], {"stdin": b""}),
+    ("gff2bed-option-of-other-format", "gff2bed", ["--snvs"], {"stdin": b""}),
+    ("convert2bed-direct", "convert2bed", ["--input=gff", "--output=bed", "-"], {"stdin": CT + "gff/sample.gff"}),
+    ("convert2bed-direct-starch", "convert2bed", ["-i", "vcf", "-o", "starch", "--starch-gzip"],
+     {"stdin": CT + "vcf/sample.vcf"}),
+    ("convert2bed-bad-input-format", "convert2bed", ["-i", "nosuch"], {"stdin": b""}),
 ]
 
 
@@ -334,6 +391,7 @@ def run(case, cwd):
         pre.append("%s exit %d %s" % (p, r.returncode, norm(r.stderr, cwd)))
     before = snapshot(cwd)
     env = dict(os.environ)
+    env["PATH"] = BIN + os.pathsep + env.get("PATH", "")    # convert2bed runs sort-bed and starch from PATH
     for k, v in opt.get("env", {}).items():
         if v is None:
             env.pop(k, None)
@@ -371,6 +429,11 @@ EXPECTED_XPLAT = {
                         " libraries leave the file position differently, so the byte count in the message differs",
     "starchcat-missing": "upstream reports this error with assert(): the C library words the assertion"
                          " message differently and abort() ends with another status (SIGABRT vs 0xC0000409)",
+    "gff2starch-gzip-note": "the upstream bash wrapper splits a note at spaces and keeps only its first word;"
+                            " the Windows launcher passes the whole note, as convert2bed itself does",
+    "bam2bed-truncated": "samtools.exe writes its error messages with CRLF; and which pipeline stage reports"
+                         " the failure is a race upstream (one stage waits with waitpid(0), i.e. for any child)",
+    "bam2starch-truncated": "same as bam2bed-truncated",
 }
 
 

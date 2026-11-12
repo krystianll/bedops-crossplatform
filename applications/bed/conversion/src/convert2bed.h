@@ -49,7 +49,29 @@
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <sys/param.h>
+#if defined(_WIN32)
+/*
+   bedops-crossplatform: Windows has no fork(), exec() or <sys/wait.h>.
+   convert2bed.c starts the helper programs with CreateProcess() and
+   replaces waitpid() with c2b_waitpid(). A child's status is shaped as on
+   Unix (exit code << 8), so the "exit status [256 | 1]" messages match;
+   a crash status above 255 (0xC00000xx) is kept whole. The `cat` stage
+   runs as a thread inside convert2bed.
+*/
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <windows.h>
+#include <io.h>
+#define WNOHANG 1
+#define WUNTRACED 2
+#define WIFEXITED(s) 1
+#define WIFSIGNALED(s) 0
+#define WEXITSTATUS(s) ((unsigned) (s) > 0xffffu ? (int) (s) : ((s) >> 8) & 0xff)
+#define waitpid c2b_waitpid
+#define C2B_INPROCESS_CAT "(in-process cat)"
+#else
 #include <sys/wait.h>
+#endif
 
 #include "suite/BEDOPS.Constants.hpp"
 
@@ -1676,6 +1698,9 @@ extern "C" {
     static void                       c2b_unset_close_exec_flag(int fd);
     static int                        c2b_pipe4(int fd[2], int flags);
     static pid_t                      c2b_popen4(const char* cmd, int pin[2], int pout[2], int perr[2], int flags);
+#if defined(_WIN32)
+    static pid_t                      c2b_waitpid(pid_t pid, int* status, int options); /* bedops-crossplatform: */
+#endif
     static void                       c2b_test_dependencies();
     static boolean                    c2b_print_matches(char* path, char* fn);
     static char *                     c2b_strsep(char** stringp, const char* delim);
